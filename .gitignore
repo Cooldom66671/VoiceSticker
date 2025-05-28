@@ -230,7 +230,8 @@ access.log
 # =========================
 
 # Model files
-models/
+models/*
+!models/.gitkeep
 *.pt
 *.pth
 *.pkl
@@ -459,10 +460,6 @@ logs/*
 # Ignore all storage except .gitkeep
 storage/*
 !storage/.gitkeep
-
-# Ignore model downloads
-models/*
-!models/.gitkeep
 
 # Keep empty directories with .gitkeep
 !.gitkeep

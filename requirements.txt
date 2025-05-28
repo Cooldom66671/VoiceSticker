@@ -1,0 +1,11 @@
+aiogram
+python-dotenv
+Pillow
+pydub
+ffmpeg-python
+aiosqlite
+diffusers
+torch
+accelerate
+transformers
+openai-whisper

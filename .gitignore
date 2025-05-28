@@ -1,0 +1,20 @@
+# Virtual Environment
+venv/
+.venv/
+*.pyc
+__pycache__/
+
+# Logs
+logs/
+
+# Storage for generated stickers and audio
+storage/
+
+# Environment variables (contains bot token and API keys)
+.env
+
+# Python-specific files
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.DS_Store # macOS specific

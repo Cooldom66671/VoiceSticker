@@ -1,11 +1,65 @@
-aiogram
-python-dotenv
-Pillow
-pydub
-ffmpeg-python
-aiosqlite
-diffusers
-torch
-accelerate
-transformers
-openai-whisper
+# Core dependencies
+python-dotenv==1.0.1
+aiofiles==23.2.1
+
+# Telegram Bot
+aiogram==3.7.0
+aiohttp==3.9.5
+magic-filter==1.0.12
+
+# Database
+aiosqlite==0.20.0
+
+# Image processing
+Pillow==10.3.0
+numpy==1.26.4
+
+# Audio processing
+pydub==0.25.1
+ffmpeg-python==0.2.0
+
+# Speech recognition (Whisper)
+openai-whisper==20231117
+tiktoken==0.6.0
+
+# Image generation (Stable Diffusion)
+diffusers==0.27.2
+transformers==4.40.2
+accelerate==0.30.1
+safetensors==0.4.3
+omegaconf==2.3.0
+
+# PyTorch (выберите одну из опций ниже в зависимости от системы)
+# Для CPU:
+# torch==2.3.0
+# torchaudio==2.3.0
+# torchvision==0.18.0
+
+# Для CUDA 11.8:
+# torch==2.3.0+cu118
+# torchaudio==2.3.0+cu118
+# torchvision==0.18.0+cu118
+# --extra-index-url https://download.pytorch.org/whl/cu118
+
+# Для CUDA 12.1:
+# torch==2.3.0+cu121
+# torchaudio==2.3.0+cu121  
+# torchvision==0.18.0+cu121
+# --extra-index-url https://download.pytorch.org/whl/cu121
+
+# Для Apple Silicon (M1/M2/M3) - устанавливается автоматически:
+torch==2.3.0
+torchaudio==2.3.0
+torchvision==0.18.0
+
+# Optional ML optimizations
+xformers==0.0.26  # Только для CUDA
+# triton==2.3.0   # Только для Linux с CUDA
+
+# Development tools (optional)
+pytest==8.2.1
+pytest-asyncio==0.23.7
+black==24.4.2
+flake8==7.0.0
+mypy==1.10.0
+pre-commit==3.7.1

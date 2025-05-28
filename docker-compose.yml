@@ -1,0 +1,125 @@
+version: '3.8'
+
+services:
+  golostickery-bot:
+    # Название контейнера
+    container_name: golostickery_bot
+    
+    # Сборка из Dockerfile в текущей директории
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - PYTHON_VERSION=3.11
+    
+    # Использовать готовый образ (альтернатива build)
+    # image: golostickery:latest
+    
+    # Файл с переменными окружения
+    env_file:
+      - .env
+    
+    # Дополнительные переменные окружения
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=Europe/Moscow  # Часовой пояс
+    
+    # Монтирование volumes
+    volumes:
+      # Хранилище файлов
+      - ./storage:/app/storage
+      
+      # Логи
+      - ./logs:/app/logs
+      
+      # База данных
+      - ./stickers.db:/app/stickers.db
+      
+      # Кэш моделей Hugging Face
+      - huggingface_cache:/root/.cache/huggingface
+      
+      # Кэш моделей Whisper
+      - whisper_cache:/root/.cache/whisper
+      
+      # Кэш pip (для ускорения пересборки)
+      - pip_cache:/root/.cache/pip
+    
+    # Политика перезапуска
+    restart: unless-stopped
+    
+    # Ограничения ресурсов
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'           # Максимум 4 CPU
+          memory: 8G            # Максимум 8GB RAM
+        reservations:
+          cpus: '2.0'           # Минимум 2 CPU
+          memory: 4G            # Минимум 4GB RAM
+    
+    # Сеть
+    networks:
+      - bot_network
+    
+    # Healthcheck
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('https://api.telegram.org')"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 1m
+    
+    # Логирование
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Метки для организации
+    labels:
+      - "com.example.description=Telegram bot for sticker generation"
+      - "com.example.version=1.0.0"
+
+  # Опциональный сервис для мониторинга (Grafana + Prometheus)
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   container_name: golostickery_prometheus
+  #   volumes:
+  #     - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+  #     - prometheus_data:/prometheus
+  #   ports:
+  #     - "9090:9090"
+  #   networks:
+  #     - bot_network
+  #   restart: unless-stopped
+
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   container_name: golostickery_grafana
+  #   volumes:
+  #     - grafana_data:/var/lib/grafana
+  #   ports:
+  #     - "3000:3000"
+  #   networks:
+  #     - bot_network
+  #   restart: unless-stopped
+
+# Определение volumes
+volumes:
+  huggingface_cache:
+    name: golostickery_huggingface_cache
+  whisper_cache:
+    name: golostickery_whisper_cache
+  pip_cache:
+    name: golostickery_pip_cache
+  # prometheus_data:
+  #   name: golostickery_prometheus_data
+  # grafana_data:
+  #   name: golostickery_grafana_data
+
+# Определение сетей
+networks:
+  bot_network:
+    driver: bridge
+    name: golostickery_network

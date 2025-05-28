@@ -1,20 +1,468 @@
-# Virtual Environment
-venv/
-.venv/
-*.pyc
+# =========================
+# Python
+# =========================
+
+# Byte-compiled / optimized / DLL files
 __pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# =========================
+# Virtual Environments
+# =========================
+venv/
+venv311/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+virtualenv/
+.virtualenv/
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# pdm
+.pdm.toml
+
+# PEP 582
+__pypackages__/
+
+# =========================
+# IDEs and Editors
+# =========================
+
+# VSCode
+.vscode/
+*.code-workspace
+.history/
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+out/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+*.un~
+Session.vim
+.netrwhist
+*~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# =========================
+# Project Specific
+# =========================
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+stickers.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Storage directories
+storage/
+temp/
+tmp/
+uploads/
+downloads/
+cache/
 
 # Logs
 logs/
+*.log
+*.log.*
+log/
+error.log
+access.log
 
-# Storage for generated stickers and audio
-storage/
+# =========================
+# ML Models and Data
+# =========================
 
-# Environment variables (contains bot token and API keys)
-.env
+# Model files
+models/
+*.pt
+*.pth
+*.pkl
+*.h5
+*.bin
+*.onnx
+*.pb
+*.safetensors
+*.ckpt
 
-# Python-specific files
+# Model caches
+.cache/
+~/.cache/
+.huggingface/
+.torch/
+.keras/
+
+# Dataset files
+data/
+datasets/
+*.csv
+*.json
+*.parquet
+*.feather
+
+# =========================
+# Media Files
+# =========================
+
+# Images
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+*.svg
+*.ico
+*.bmp
+*.tiff
+*.tif
+
+# Audio
+*.mp3
+*.wav
+*.ogg
+*.m4a
+*.flac
+*.aac
+*.wma
+
+# Video
+*.mp4
+*.avi
+*.mov
+*.wmv
+*.flv
+*.webm
+*.mkv
+*.m4v
+
+# Исключения для важных файлов проекта
+!assets/
+!assets/**
+!docs/images/
+!docs/images/**
+!static/
+!static/**
+
+# =========================
+# Security and Secrets
+# =========================
+
+# Private keys
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Credentials
+credentials.json
+secrets.json
+secret.yaml
+config.secret.json
+
+# Tokens
+tokens.json
+token.txt
+*.token
+
+# =========================
+# Backup and Temporary
+# =========================
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+.temp/
+temp-*
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# =========================
+# Testing
+# =========================
+
+# Test outputs
+test-results/
+test-reports/
+junit/
+.nyc_output/
+
+# Benchmarks
+benchmarks/results/
+
+# =========================
+# Documentation
+# =========================
+
+# Sphinx
+docs/_build/
+docs/_static/
+docs/_templates/
+
+# MkDocs
+site/
+
+# =========================
+# CI/CD
+# =========================
+
+# GitHub Actions
+.github/workflows/local/
+
+# GitLab CI
+.gitlab-ci-local/
+
+# Jenkins
+jenkins/
+
+# =========================
+# Docker
+# =========================
+
+# Docker volumes (if mounted locally)
+docker-volumes/
+.docker/
+
+# =========================
+# Miscellaneous
+# =========================
+
+# Node modules (if any JS tools used)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python type checking
 .mypy_cache/
-.pytest_cache/
-.ruff_cache/
-.DS_Store # macOS specific
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath
+*.sage.py
+
+# Spyder
+.spyderproject
+.spyproject
+
+# Rope
+.ropeproject
+
+# Mr Developer
+.mr.developer.cfg
+.project
+.pydevproject
+
+# mkdocs
+/site
+
+# Pycharm
+.idea/
+
+# VS Code
+.vscode/
+
+# Certificates
+*.crt
+*.csr
+
+# =========================
+# Custom patterns
+# =========================
+
+# Ignore all .env files except .env.example
+.env*
+!.env.example
+
+# Ignore all logs except .gitkeep
+logs/*
+!logs/.gitkeep
+
+# Ignore all storage except .gitkeep
+storage/*
+!storage/.gitkeep
+
+# Ignore model downloads
+models/*
+!models/.gitkeep
+
+# Keep empty directories with .gitkeep
+!.gitkeep

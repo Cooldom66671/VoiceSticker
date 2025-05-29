@@ -453,7 +453,7 @@ celerybeat.pid
 .env*
 !.env.example
 
-# Ignore all logs except .gitkeep
+source venv/bin/activate
 logs/*
 !logs/.gitkeep
 

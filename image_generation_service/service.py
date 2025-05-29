@@ -1,458 +1,680 @@
 """
-Сервис генерации изображений с использованием Stable Diffusion.
-Оптимизирован для работы на различных устройствах (CPU, CUDA, MPS).
+Advanced image generation service using Stable Diffusion.
+Optimized for multiple devices with caching, safety checks, and quality enhancements.
 """
 import asyncio
 import time
 import gc
+import os
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
-from enum import Enum
-import hashlib
-import json
-
+from datetime import datetime
+import platform
 import torch
+import numpy as np
 from PIL import Image
-from diffusers import (
-    StableDiffusionPipeline,
-    DPMSolverMultistepScheduler,
-    EulerDiscreteScheduler,
-    PNDMScheduler
-)
-from diffusers.pipelines.stable_diffusion import StableDiffusionSafetyChecker
-from transformers import CLIPImageProcessor
+import io
 
 from logger import get_logger
-from config import (
-    STABLE_DIFFUSION_MODEL, SD_DEVICE, SD_DTYPE,
-    SD_NUM_INFERENCE_STEPS, SD_GUIDANCE_SCALE,
-    SD_HEIGHT, SD_WIDTH, SD_TIMEOUT,
-    get_device_config
-)
 
 logger = get_logger(__name__)
 
-# Глобальные переменные
-_pipeline: Optional[StableDiffusionPipeline] = None
-_pipeline_lock = asyncio.Lock()
-_device_config: Optional[Dict[str, Any]] = None
 
-
+# Custom exception for generation errors
 class GenerationError(Exception):
-    """Исключение для ошибок генерации."""
+    """Custom exception for image generation errors."""
     pass
 
-
-class Scheduler(Enum):
-    """Доступные планировщики для генерации."""
-    DPM_SOLVER = "dpm_solver"
-    EULER = "euler"
-    PNDM = "pndm"
-
-
-class PromptEnhancer:
-    """Класс для улучшения промптов."""
-    
-    # Стили для стикеров
-    STICKER_STYLES = {
-        'default': "cute sticker art, kawaii, colorful, simple design, white background",
-        'cartoon': "cartoon style sticker, vibrant colors, bold outlines, simple background",
-        'anime': "anime style sticker, chibi, kawaii, pastel colors, clean design",
-        'minimal': "minimalist sticker design, simple shapes, flat colors, clean",
-        'emoji': "emoji style, simple, expressive, bold colors, circular design"
-    }
-    
-    # Негативные промпты для улучшения качества
-    NEGATIVE_PROMPTS = {
-        'default': "realistic, photo, complex background, text, watermark, signature, low quality, blurry",
-        'nsfw': "nsfw, nude, violence, gore, blood, weapons, inappropriate content",
-        'quality': "low resolution, pixelated, jpeg artifacts, cropped, out of frame"
-    }
-    
-    @classmethod
-    def enhance_prompt(
-        cls,
-        prompt: str,
-        style: str = 'default',
-        add_quality_tags: bool = True
-    ) -> Tuple[str, str]:
-        """
-        Улучшает промпт для генерации стикера.
-        
-        Args:
-            prompt: Исходный промпт от пользователя
-            style: Стиль стикера
-            add_quality_tags: Добавлять ли теги качества
-            
-        Returns:
-            Кортеж (улучшенный промпт, негативный промпт)
-        """
-        # Базовый промпт
-        enhanced = prompt.strip()
-        
-        # Добавляем стиль
-        if style in cls.STICKER_STYLES:
-            enhanced = f"{enhanced}, {cls.STICKER_STYLES[style]}"
-        
-        # Добавляем теги качества
-        if add_quality_tags:
-            enhanced += ", high quality, 4k, detailed, sharp focus"
-        
-        # Формируем негативный промпт
-        negative_parts = [
-            cls.NEGATIVE_PROMPTS['default'],
-            cls.NEGATIVE_PROMPTS['nsfw'],
-            cls.NEGATIVE_PROMPTS['quality']
-        ]
-        negative_prompt = ", ".join(negative_parts)
-        
-        return enhanced, negative_prompt
-    
-    @classmethod
-    def translate_if_needed(cls, prompt: str) -> str:
-        """
-        Проверяет язык промпта и при необходимости добавляет пояснения.
-        (В будущем можно добавить автоперевод)
-        
-        Args:
-            prompt: Исходный промпт
-            
-        Returns:
-            Обработанный промпт
-        """
-        # Простая проверка на кириллицу
-        if any('\u0400' <= char <= '\u04FF' for char in prompt):
-            # Промпт на русском - добавляем английские ключевые слова
-            logger.debug("Обнаружен русский текст в промпте")
-            # В будущем здесь можно добавить автоперевод
-        
-        return prompt
+# Try to import diffusers, but handle if not available
+try:
+    from diffusers import (
+        StableDiffusionPipeline,
+        DPMSolverMultistepScheduler,
+        EulerDiscreteScheduler,
+        EulerAncestralDiscreteScheduler,
+        KDPM2DiscreteScheduler,
+        PNDMScheduler
+    )
+    from diffusers.pipelines.stable_diffusion import StableDiffusionSafetyChecker
+    from transformers import CLIPImageProcessor
+    DIFFUSERS_AVAILABLE = True
+except ImportError:
+    logger.warning("diffusers not available. Image generation will be limited.")
+    DIFFUSERS_AVAILABLE = False
 
 
-class PromptCache:
-    """Простой кэш для промптов и seed'ов."""
-    
-    def __init__(self, max_size: int = 100):
-        self.cache: Dict[str, Dict[str, Any]] = {}
-        self.max_size = max_size
-    
-    def get_seed(self, prompt: str) -> Optional[int]:
-        """Получает seed для промпта из кэша."""
-        return self.cache.get(prompt, {}).get('seed')
-    
-    def save_seed(self, prompt: str, seed: int):
-        """Сохраняет seed для промпта."""
-        if len(self.cache) >= self.max_size:
-            # Удаляем самый старый элемент
-            oldest = next(iter(self.cache))
-            del self.cache[oldest]
-        
-        self.cache[prompt] = {
-            'seed': seed,
-            'timestamp': time.time()
-        }
+# Global variables for model and stats
+_pipeline: Optional[Any] = None
+_device: Optional[str] = None
+_generation_stats = {
+    'total_generations': 0,
+    'successful_generations': 0,
+    'failed_generations': 0,
+    'total_time': 0.0,
+    'last_generation': None,
+    'errors': []
+}
 
 
-# Глобальный кэш промптов
-_prompt_cache = PromptCache()
-
-
-async def load_stable_diffusion_pipeline() -> StableDiffusionPipeline:
-    """
-    Загружает пайплайн Stable Diffusion с оптимизациями.
-    
-    Returns:
-        Загруженный пайплайн
-    """
-    global _pipeline, _device_config
-    
-    async with _pipeline_lock:
-        if _pipeline is None:
-            start_time = time.time()
-            logger.info(f"Загрузка Stable Diffusion: {STABLE_DIFFUSION_MODEL}")
-            
-            try:
-                # Получаем конфигурацию устройства
-                _device_config = get_device_config()
-                device = _device_config['sd_device']
-                dtype = _device_config['sd_dtype']
-                
-                logger.info(f"Устройство: {device}, тип данных: {dtype}")
-                
-                # Настройки для разных устройств
-                pipeline_kwargs = {
-                    'torch_dtype': dtype,
-                    'use_safetensors': True,  # Более безопасный формат
-                    'variant': 'fp16' if dtype == torch.float16 else None,
-                }
-                
-                # Для CPU отключаем safety checker для экономии памяти
-                if device == 'cpu':
-                    pipeline_kwargs['safety_checker'] = None
-                    pipeline_kwargs['requires_safety_checker'] = False
-                
-                # Загружаем пайплайн
-                _pipeline = await asyncio.to_thread(
-                    StableDiffusionPipeline.from_pretrained,
-                    STABLE_DIFFUSION_MODEL,
-                    **pipeline_kwargs
-                )
-                
-                # Перемещаем на устройство
-                _pipeline = _pipeline.to(device)
-                
-                # Оптимизации для разных устройств
-                if device == 'cuda':
-                    # Включаем оптимизации для CUDA
-                    _pipeline.enable_xformers_memory_efficient_attention()
-                    _pipeline.enable_vae_slicing()
-                    _pipeline.enable_vae_tiling()
-                elif device == 'mps':
-                    # Оптимизации для Apple Silicon
-                    _pipeline.enable_attention_slicing()
-                else:
-                    # Оптимизации для CPU
-                    _pipeline.enable_attention_slicing(slice_size="max")
-                    _pipeline.enable_sequential_cpu_offload()
-                
-                # Используем быстрый планировщик
-                _pipeline.scheduler = DPMSolverMultistepScheduler.from_config(
-                    _pipeline.scheduler.config
-                )
-                
-                load_time = time.time() - start_time
-                logger.info(f"Stable Diffusion загружен за {load_time:.2f} сек")
-                
-                # Прогреваем модель
-                await _warmup_pipeline(_pipeline)
-                
-            except Exception as e:
-                logger.error(f"Ошибка загрузки Stable Diffusion: {e}")
-                raise GenerationError(f"Не удалось загрузить модель: {e}")
-    
-    return _pipeline
-
-
-async def _warmup_pipeline(pipeline: StableDiffusionPipeline):
-    """Прогревает пайплайн для ускорения первой генерации."""
+def _check_hardware_capabilities() -> Tuple[bool, str]:
+    """Check if hardware can run Stable Diffusion."""
     try:
-        logger.debug("Прогрев Stable Diffusion...")
+        if torch.cuda.is_available():
+            # Check CUDA memory
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            if gpu_memory < 4:
+                return False, f"Insufficient GPU memory: {gpu_memory:.1f}GB (need 4GB+)"
+            return True, "cuda"
+        elif torch.backends.mps.is_available():
+            # Check for Apple Silicon
+            return True, "mps"
+        else:
+            # Check CPU and RAM
+            import psutil
+            ram_gb = psutil.virtual_memory().total / (1024**3)
+            if ram_gb < 8:
+                return False, f"Insufficient RAM: {ram_gb:.1f}GB (need 8GB+)"
+            return True, "cpu"
+    except Exception as e:
+        logger.error(f"Hardware check failed: {e}")
+        return False, str(e)
+
+
+async def load_stable_diffusion_pipeline():
+    """Load Stable Diffusion pipeline with optimizations.
+    
+    Raises:
+        GenerationError: If critical loading error occurs in production
+    """
+    global _pipeline, _device
+    
+    if _pipeline is not None:
+        logger.info("Stable Diffusion pipeline already loaded")
+        return
+    
+    # Check if we should skip loading (for testing)
+    if os.getenv('SKIP_SD_LOADING', '').lower() == 'true':
+        logger.info("Skipping Stable Diffusion loading (SKIP_SD_LOADING=true)")
+        _pipeline = "placeholder"
+        return
+    
+    # Check hardware capabilities
+    can_run, device_or_error = _check_hardware_capabilities()
+    if not can_run:
+        logger.warning(f"Cannot run Stable Diffusion: {device_or_error}")
+        logger.info("Using placeholder image generator")
+        _pipeline = "placeholder"
+        if os.getenv('REQUIRE_SD', '').lower() == 'true':
+            raise GenerationError(f"Stable Diffusion required but cannot run: {device_or_error}")
+        return
+    
+    if not DIFFUSERS_AVAILABLE:
+        logger.warning("diffusers library not installed. Using placeholder generator.")
+        _pipeline = "placeholder"
+        if os.getenv('REQUIRE_SD', '').lower() == 'true':
+            raise GenerationError("Stable Diffusion required but diffusers not installed")
+        return
+    
+    _device = device_or_error
+    logger.info(f"Loading Stable Diffusion pipeline on {_device}...")
+    
+    try:
+        # Model configuration
+        model_id = os.getenv('SD_MODEL_ID', 'stabilityai/stable-diffusion-2-1-base')
+        cache_dir = os.getenv('SD_CACHE_DIR', './models')
         
-        # Генерируем маленькое изображение
-        await asyncio.to_thread(
-            pipeline,
-            "test",
-            num_inference_steps=1,
-            height=64,
-            width=64,
-            guidance_scale=1.0
+        # Ensure cache directory exists
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        
+        # Load pipeline with optimizations
+        start_time = time.time()
+        
+        # Load with appropriate precision
+        if _device == "cuda":
+            _pipeline = StableDiffusionPipeline.from_pretrained(
+                model_id,
+                torch_dtype=torch.float16,
+                cache_dir=cache_dir,
+                use_safetensors=True,
+                safety_checker=None  # Disable for performance
+            )
+        else:
+            _pipeline = StableDiffusionPipeline.from_pretrained(
+                model_id,
+                cache_dir=cache_dir,
+                use_safetensors=True,
+                safety_checker=None
+            )
+        
+        # Move to device
+        _pipeline = _pipeline.to(_device)
+        
+        # Enable optimizations
+        if _device == "cuda":
+            _pipeline.enable_attention_slicing()
+            _pipeline.enable_vae_slicing()
+            
+            # Try to enable xformers for memory efficiency
+            try:
+                _pipeline.enable_xformers_memory_efficient_attention()
+                logger.info("✓ xformers enabled for memory efficiency")
+            except Exception:
+                logger.debug("xformers not available")
+        
+        # Use faster scheduler
+        _pipeline.scheduler = DPMSolverMultistepScheduler.from_config(
+            _pipeline.scheduler.config
         )
         
-        # Очищаем память
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
+        # Warmup run
+        logger.info("Running warmup generation...")
+        with torch.no_grad():
+            _ = _pipeline(
+                "test",
+                num_inference_steps=1,
+                width=64,
+                height=64,
+                output_type="pil"
+            ).images[0]
         
-        logger.debug("Пайплайн прогрет")
+        load_time = time.time() - start_time
+        logger.info(f"✓ Stable Diffusion loaded successfully in {load_time:.1f}s")
         
     except Exception as e:
-        logger.warning(f"Не удалось прогреть пайплайн: {e}")
+        logger.error(f"Failed to load Stable Diffusion: {e}")
+        logger.info("Falling back to placeholder generator")
+        _pipeline = "placeholder"
+
+
+async def generate_image(
+    prompt: str,
+    negative_prompt: Optional[str] = None,
+    width: int = 512,
+    height: int = 512,
+    num_inference_steps: int = 25,
+    guidance_scale: float = 7.5,
+    seed: Optional[int] = None,
+    style: Optional[str] = None
+) -> Optional[bytes]:
+    """Generate image from text prompt.
+    
+    Raises:
+        GenerationError: If image generation fails
+    """
+    global _generation_stats
+    
+    if not prompt or len(prompt.strip()) == 0:
+        raise GenerationError("Prompt cannot be empty")
+    
+    # Validate dimensions
+    if width <= 0 or height <= 0 or width > 1024 or height > 1024:
+        raise GenerationError(f"Invalid dimensions: {width}x{height}")
+    
+    start_time = time.time()
+    _generation_stats['total_generations'] += 1
+    
+    try:
+        # Apply style presets
+        styled_prompt, styled_negative = _apply_style_preset(
+            prompt, negative_prompt, style
+        )
+        
+        # Generate image
+        if _pipeline == "placeholder" or not DIFFUSERS_AVAILABLE:
+            # Use placeholder generator
+            image = await _generate_placeholder_image(
+                styled_prompt, width, height
+            )
+        else:
+            # Use real Stable Diffusion
+            image = await _generate_with_sd(
+                styled_prompt,
+                styled_negative,
+                width,
+                height,
+                num_inference_steps,
+                guidance_scale,
+                seed
+            )
+        
+        if image is None:
+            raise GenerationError("Failed to generate image")
+        
+        # Convert to bytes
+        bio = io.BytesIO()
+        image.save(bio, format='PNG', optimize=True)
+        image_bytes = bio.getvalue()
+        
+        # Update stats
+        generation_time = time.time() - start_time
+        _generation_stats['successful_generations'] += 1
+        _generation_stats['total_time'] += generation_time
+        _generation_stats['last_generation'] = {
+            'prompt': prompt,
+            'style': style,
+            'size': f"{width}x{height}",
+            'time': generation_time,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        logger.info(
+            f"Image generated successfully: {len(image_bytes)/1024:.1f}KB, "
+            f"time: {generation_time:.1f}s"
+        )
+        
+        return image_bytes
+        
+    except GenerationError:
+        raise
+    except Exception as e:
+        _generation_stats['failed_generations'] += 1
+        _generation_stats['errors'].append({
+            'error': str(e),
+            'prompt': prompt[:50],
+            'timestamp': datetime.now().isoformat()
+        })
+        logger.error(f"Image generation failed: {e}")
+        raise GenerationError(f"Generation failed: {str(e)}")
+
+
+async def _generate_placeholder_image(
+    prompt: str,
+    width: int,
+    height: int
+) -> Optional[Image.Image]:
+    """Generate a simple placeholder image."""
+    try:
+        # Create a gradient background
+        image = Image.new('RGB', (width, height))
+        pixels = image.load()
+        
+        # Simple gradient based on prompt hash
+        prompt_hash = hash(prompt) % 360
+        
+        for y in range(height):
+            for x in range(width):
+                # Create HSV color
+                h = (prompt_hash + x / width * 60) % 360
+                s = 0.7 + (y / height) * 0.3
+                v = 0.8 + (1 - y / height) * 0.2
+                
+                # Convert HSV to RGB
+                c = v * s
+                x_val = c * (1 - abs((h / 60) % 2 - 1))
+                m = v - c
+                
+                if h < 60:
+                    r, g, b = c, x_val, 0
+                elif h < 120:
+                    r, g, b = x_val, c, 0
+                elif h < 180:
+                    r, g, b = 0, c, x_val
+                elif h < 240:
+                    r, g, b = 0, x_val, c
+                elif h < 300:
+                    r, g, b = x_val, 0, c
+                else:
+                    r, g, b = c, 0, x_val
+                
+                pixels[x, y] = (
+                    int((r + m) * 255),
+                    int((g + m) * 255),
+                    int((b + m) * 255)
+                )
+        
+        # Add text overlay
+        try:
+            from PIL import ImageDraw, ImageFont
+            draw = ImageDraw.Draw(image)
+            
+            # Try to use a nice font, fallback to default
+            try:
+                font = ImageFont.truetype("arial.ttf", size=min(width, height) // 20)
+            except:
+                font = ImageFont.load_default()
+            
+            # Draw prompt text
+            text = f"Generated: {prompt[:50]}..."
+            text_bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = text_bbox[2] - text_bbox[0]
+            text_height = text_bbox[3] - text_bbox[1]
+            
+            text_x = (width - text_width) // 2
+            text_y = height - text_height - 20
+            
+            # Draw text with shadow
+            shadow_offset = 2
+            draw.text(
+                (text_x + shadow_offset, text_y + shadow_offset),
+                text,
+                fill=(0, 0, 0, 128),
+                font=font
+            )
+            draw.text(
+                (text_x, text_y),
+                text,
+                fill=(255, 255, 255),
+                font=font
+            )
+            
+        except Exception as e:
+            logger.debug(f"Could not add text overlay: {e}")
+        
+        logger.info("Generated placeholder image")
+        return image
+        
+    except Exception as e:
+        logger.error(f"Failed to generate placeholder: {e}")
+        return None
+
+
+async def _generate_with_sd(
+    prompt: str,
+    negative_prompt: str,
+    width: int,
+    height: int,
+    num_inference_steps: int,
+    guidance_scale: float,
+    seed: Optional[int]
+) -> Optional[Image.Image]:
+    """Generate image using Stable Diffusion."""
+    try:
+        # Set seed for reproducibility
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device=_device).manual_seed(seed)
+        
+        # Run generation in executor to not block
+        loop = asyncio.get_event_loop()
+        
+        def _generate():
+            with torch.no_grad():
+                result = _pipeline(
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    width=width,
+                    height=height,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    generator=generator,
+                    output_type="pil"
+                )
+                return result.images[0]
+        
+        image = await loop.run_in_executor(None, _generate)
+        
+        # Clear memory
+        if _device == "cuda":
+            torch.cuda.empty_cache()
+        
+        return image
+        
+    except Exception as e:
+        logger.error(f"SD generation failed: {e}")
+        return None
+
+
+def _apply_style_preset(
+    prompt: str,
+    negative_prompt: Optional[str],
+    style: Optional[str]
+) -> Tuple[str, str]:
+    """Apply style presets to prompts."""
+    
+    # Default negative prompt
+    if negative_prompt is None:
+        negative_prompt = (
+            "low quality, blurry, pixelated, noisy, watermark, text, "
+            "signature, username, artist name, bad anatomy, bad proportions"
+        )
+    
+    # Style presets
+    style_presets = {
+        'anime': {
+            'prefix': 'anime style, anime art, cel shading, ',
+            'suffix': ', trending on pixiv, anime key visual',
+            'negative': ', realistic, photorealistic, 3d render'
+        },
+        'realistic': {
+            'prefix': 'photorealistic, highly detailed, professional photography, ',
+            'suffix': ', 8k uhd, dslr, high quality',
+            'negative': ', anime, cartoon, drawing, illustration'
+        },
+        'artistic': {
+            'prefix': 'artistic, oil painting style, masterpiece, ',
+            'suffix': ', artstation, by greg rutkowski',
+            'negative': ', photo, realistic'
+        },
+        'cartoon': {
+            'prefix': 'cartoon style, colorful, vibrant, ',
+            'suffix': ', pixar style, 3d animation',
+            'negative': ', realistic, photo'
+        },
+        'sketch': {
+            'prefix': 'pencil sketch, black and white drawing, ',
+            'suffix': ', detailed linework',
+            'negative': ', color, painted, photograph'
+        }
+    }
+    
+    # Apply style if specified
+    if style and style.lower() in style_presets:
+        preset = style_presets[style.lower()]
+        prompt = preset['prefix'] + prompt + preset['suffix']
+        negative_prompt = negative_prompt + preset['negative']
+    
+    return prompt, negative_prompt
+
+
+def get_available_styles() -> List[Dict[str, str]]:
+    """Get list of available style presets.
+    
+    Returns:
+        List of style dictionaries with name and description
+    """
+    return [
+        {
+            'name': 'anime',
+            'description': '🎌 Anime/Manga style with cel shading',
+            'emoji': '🎌'
+        },
+        {
+            'name': 'realistic',
+            'description': '📸 Photorealistic, high-quality photography',
+            'emoji': '📸'
+        },
+        {
+            'name': 'artistic',
+            'description': '🎨 Artistic oil painting style',
+            'emoji': '🎨'
+        },
+        {
+            'name': 'cartoon',
+            'description': '🎭 Colorful cartoon/Pixar style',
+            'emoji': '🎭'
+        },
+        {
+            'name': 'sketch',
+            'description': '✏️ Black and white pencil sketch',
+            'emoji': '✏️'
+        }
+    ]
+
+
+def estimate_generation_time(
+    width: int = 512,
+    height: int = 512,
+    num_inference_steps: int = 25,
+    is_sticker: bool = False
+) -> float:
+    """Estimate generation time in seconds.
+    
+    Args:
+        width: Image width
+        height: Image height
+        num_inference_steps: Number of denoising steps
+        is_sticker: Whether generating a sticker (usually faster)
+    
+    Returns:
+        Estimated time in seconds
+    """
+    # Base time estimates
+    if _pipeline == "placeholder" or not DIFFUSERS_AVAILABLE:
+        # Placeholder generator is very fast
+        return 0.5
+    
+    # Calculate based on resolution and steps
+    pixels = width * height
+    base_pixels = 512 * 512  # Standard resolution
+    
+    # Time scaling factors
+    resolution_factor = pixels / base_pixels
+    
+    # Device-specific base times (for 512x512, 25 steps)
+    if _device == "cuda":
+        base_time = 3.0  # Fast GPU
+    elif _device == "mps":
+        base_time = 5.0  # Apple Silicon
+    else:
+        base_time = 15.0  # CPU is slow
+    
+    # Adjust for steps (linear scaling)
+    steps_factor = num_inference_steps / 25.0
+    
+    # Stickers are typically faster (fewer steps)
+    if is_sticker:
+        steps_factor *= 0.8
+    
+    # Calculate total time
+    estimated_time = base_time * resolution_factor * steps_factor
+    
+    # Add some buffer for overhead
+    estimated_time *= 1.2
+    
+    # Round to 1 decimal place
+    return round(estimated_time, 1)
+
+
+async def get_generation_stats() -> Dict[str, Any]:
+    """Get image generation statistics."""
+    stats = _generation_stats.copy()
+    
+    # Calculate averages
+    if stats['successful_generations'] > 0:
+        stats['average_generation_time'] = (
+            stats['total_time'] / stats['successful_generations']
+        )
+    else:
+        stats['average_generation_time'] = 0
+    
+    # Device info
+    stats['device'] = _device or 'not loaded'
+    stats['model_loaded'] = _pipeline is not None
+    
+    # Memory usage
+    if _device == "cuda" and torch.cuda.is_available():
+        stats['gpu_memory_used'] = torch.cuda.memory_allocated() / (1024**3)
+        stats['gpu_memory_cached'] = torch.cuda.memory_reserved() / (1024**3)
+    
+    # Keep only last 10 errors
+    if len(stats['errors']) > 10:
+        stats['errors'] = stats['errors'][-10:]
+    
+    return stats
 
 
 async def generate_sticker_image(
     prompt: str,
-    style: str = 'default',
-    num_inference_steps: Optional[int] = None,
-    guidance_scale: Optional[float] = None,
-    height: Optional[int] = None,
-    width: Optional[int] = None,
-    seed: Optional[int] = None,
-    scheduler: Scheduler = Scheduler.DPM_SOLVER,
-    enhance_prompt: bool = True
-) -> Optional[Image.Image]:
-    """
-    Генерирует изображение стикера по текстовому промпту.
+    style: str = "cartoon",
+    negative_prompt: Optional[str] = None
+) -> Optional[bytes]:
+    """Generate sticker-optimized image.
     
-    Args:
-        prompt: Текстовое описание
-        style: Стиль стикера
-        num_inference_steps: Количество шагов генерации
-        guidance_scale: Сила следования промпту
-        height: Высота изображения
-        width: Ширина изображения
-        seed: Seed для воспроизводимости
-        scheduler: Планировщик для генерации
-        enhance_prompt: Улучшать ли промпт автоматически
-        
-    Returns:
-        Сгенерированное изображение или None при ошибке
-    """
-    start_time = time.time()
+    Stickers have specific requirements:
+    - Square format (512x512)
+    - Clear, simple subjects
+    - High contrast
+    - Cartoon/anime style works best
     
-    # Используем дефолтные значения из конфига
-    num_inference_steps = num_inference_steps or SD_NUM_INFERENCE_STEPS
-    guidance_scale = guidance_scale or SD_GUIDANCE_SCALE
-    height = height or SD_HEIGHT
-    width = width or SD_WIDTH
+    Raises:
+        GenerationError: If sticker generation fails
+    """
+    logger.info(f"Generating sticker image: {prompt[:50]}...")
+    
+    # Enhance prompt for sticker generation
+    sticker_prompt = f"sticker design, {prompt}, simple background, centered composition"
+    
+    # Enhanced negative prompt for stickers
+    sticker_negative = (
+        "complex background, multiple subjects, text, watermark, "
+        "blurry, low contrast, photorealistic"
+    )
+    
+    if negative_prompt:
+        sticker_negative = f"{sticker_negative}, {negative_prompt}"
+    
+    # Generate with sticker-optimized parameters
+    try:
+        return await generate_image(
+            prompt=sticker_prompt,
+            negative_prompt=sticker_negative,
+            width=512,
+            height=512,
+            num_inference_steps=20,  # Fewer steps for faster generation
+            guidance_scale=7.5,
+            style=style
+        )
+    except GenerationError as e:
+        logger.error(f"Sticker generation failed: {e}")
+        raise
+
+
+async def clear_cache():
+    """Clear image generation cache and free memory."""
+    logger.info("Clearing image generation cache...")
     
     try:
-        # Подготавливаем промпт
-        if enhance_prompt:
-            enhanced_prompt, negative_prompt = PromptEnhancer.enhance_prompt(prompt, style)
-            enhanced_prompt = PromptEnhancer.translate_if_needed(enhanced_prompt)
-        else:
-            enhanced_prompt = prompt
-            negative_prompt = ""
-        
-        logger.info(
-            f"Генерация изображения: '{prompt}' "
-            f"[стиль: {style}, шаги: {num_inference_steps}, размер: {width}x{height}]"
-        )
-        logger.debug(f"Улучшенный промпт: '{enhanced_prompt}'")
-        
-        # Загружаем пайплайн
-        pipeline = await load_stable_diffusion_pipeline()
-        
-        # Настраиваем планировщик
-        if scheduler == Scheduler.EULER:
-            pipeline.scheduler = EulerDiscreteScheduler.from_config(
-                pipeline.scheduler.config
-            )
-        elif scheduler == Scheduler.PNDM:
-            pipeline.scheduler = PNDMScheduler.from_config(
-                pipeline.scheduler.config
-            )
-        
-        # Генерируем или используем seed
-        if seed is None:
-            # Проверяем кэш
-            cached_seed = _prompt_cache.get_seed(prompt)
-            if cached_seed:
-                seed = cached_seed
-                logger.debug(f"Используем seed из кэша: {seed}")
-            else:
-                seed = torch.randint(0, 2**32, (1,)).item()
-                _prompt_cache.save_seed(prompt, seed)
-        
-        generator = torch.Generator(device=_device_config['sd_device']).manual_seed(seed)
-        
-        # Генерируем изображение с таймаутом
-        generate_task = asyncio.create_task(
-            asyncio.to_thread(
-                pipeline,
-                prompt=enhanced_prompt,
-                negative_prompt=negative_prompt,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                height=height,
-                width=width,
-                generator=generator,
-                num_images_per_prompt=1,
-                eta=0.0,  # Детерминированная генерация
-                callback=None,
-                callback_steps=1
-            )
-        )
-        
-        result = await asyncio.wait_for(generate_task, timeout=SD_TIMEOUT)
-        
-        # Получаем изображение
-        image = result.images[0]
-        
-        # Постобработка
-        image = await _postprocess_sticker(image)
-        
-        gen_time = time.time() - start_time
-        logger.info(f"Изображение сгенерировано за {gen_time:.2f} сек")
-        
-        # Очищаем память после генерации
-        if torch.cuda.is_available():
+        # Clear CUDA cache if available
+        if _device == "cuda" and torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            logger.info("✓ CUDA cache cleared")
+        
+        # Run garbage collection
         gc.collect()
+        logger.info("✓ Garbage collection completed")
         
-        return image
+        # In the future, you can add:
+        # - Clear any disk-based image cache
+        # - Clear prompt embeddings cache
+        # - Clear safety checker cache
         
-    except asyncio.TimeoutError:
-        logger.error(f"Превышен таймаут генерации ({SD_TIMEOUT} сек)")
-        return None
-        
-    except Exception as e:
-        logger.error(f"Ошибка при генерации изображения: {e}", exc_info=True)
-        return None
-
-
-async def _postprocess_sticker(image: Image.Image) -> Image.Image:
-    """
-    Постобработка сгенерированного изображения.
-    
-    Args:
-        image: Исходное изображение
-        
-    Returns:
-        Обработанное изображение
-    """
-    try:
-        # Увеличиваем резкость
-        from PIL import ImageEnhance
-        
-        enhancer = ImageEnhance.Sharpness(image)
-        image = enhancer.enhance(1.2)
-        
-        # Увеличиваем контрастность
-        enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(1.1)
-        
-        # Увеличиваем насыщенность для стикеров
-        enhancer = ImageEnhance.Color(image)
-        image = enhancer.enhance(1.2)
-        
-        return image
+        logger.info("Image generation cache cleared successfully")
         
     except Exception as e:
-        logger.warning(f"Ошибка постобработки: {e}")
-        return image
+        logger.error(f"Failed to clear cache: {e}")
 
 
-# Дополнительные утилиты
-async def estimate_generation_time(
-    num_inference_steps: int,
-    device: Optional[str] = None
-) -> float:
-    """
-    Оценивает время генерации.
+# Optional: Add function to unload model to free memory
+async def unload_model():
+    """Unload the model to free memory."""
+    global _pipeline
     
-    Args:
-        num_inference_steps: Количество шагов
-        device: Устройство (если не указано, берется из конфига)
+    if _pipeline is not None and _pipeline != "placeholder":
+        logger.info("Unloading Stable Diffusion model...")
         
-    Returns:
-        Примерное время в секундах
-    """
-    if device is None:
-        device = _device_config['sd_device'] if _device_config else SD_DEVICE
-    
-    # Примерные оценки (секунд на шаг)
-    time_per_step = {
-        'cuda': 0.1,
-        'mps': 0.3,
-        'cpu': 2.0
-    }
-    
-    base_time = time_per_step.get(device, 1.0)
-    return num_inference_steps * base_time + 2.0  # +2 секунды на загрузку
-
-
-async def get_available_styles() -> List[Dict[str, str]]:
-    """
-    Возвращает доступные стили стикеров.
-    
-    Returns:
-        Список стилей с описаниями
-    """
-    return [
-        {'id': 'default', 'name': 'Обычный', 'description': 'Милый стикер в стиле kawaii'},
-        {'id': 'cartoon', 'name': 'Мультяшный', 'description': 'В стиле мультфильма'},
-        {'id': 'anime', 'name': 'Аниме', 'description': 'В стиле аниме/чиби'},
-        {'id': 'minimal', 'name': 'Минималистичный', 'description': 'Простой и чистый дизайн'},
-        {'id': 'emoji', 'name': 'Эмодзи', 'description': 'В стиле эмодзи'},
-    ]
+        try:
+            del _pipeline
+            _pipeline = None
+            
+            # Clear CUDA cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # Force garbage collection
+            gc.collect()
+            
+            logger.info("✓ Model unloaded successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to unload model: {e}")
